@@ -1,0 +1,135 @@
+services:
+  # ─── API Gateway (Go) ─────────────────────────────────────
+  gateway:
+    build:
+      context: ../services/gateway
+      dockerfile: Dockerfile
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      - TICKFLOW_ENV=${TICKFLOW_ENV:-production}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - TICKFLOW_TICKER_SUBJECT=${TICKFLOW_TICKER_SUBJECT:-tickflow.market.ticker}
+      - TICKFLOW_OPPORTUNITY_SUBJECT=${TICKFLOW_OPPORTUNITY_SUBJECT:-tickflow.scanner.opportunities}
+      - TICKFLOW_TRADE_RESULT_SUBJECT=${TICKFLOW_TRADE_RESULT_SUBJECT:-tickflow.execution.results}
+      - MONGODB_URL=${MONGODB_URL:-mongodb://mongodb:27017}
+      - MONGODB_DATABASE=${MONGODB_DATABASE:-tickflow}
+      - MONGODB_COLLECTION=${MONGODB_COLLECTION:-system_state}
+    depends_on:
+      - nats
+      - mongodb
+    restart: unless-stopped
+
+  # ─── Data Ingestion (Go) ──────────────────────────────────
+  ingestion:
+    build:
+      context: ../services/ingestion
+      dockerfile: Dockerfile
+    environment:
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - TICKFLOW_TICKER_SUBJECT=${TICKFLOW_TICKER_SUBJECT:-tickflow.market.ticker}
+    depends_on:
+      - nats
+    restart: unless-stopped
+
+  # ─── Scanner Engine (Rust) ────────────────────────────────
+  scanner:
+    build:
+      context: ../services/scanner
+      dockerfile: Dockerfile
+    environment:
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - TICKFLOW_TICKER_SUBJECT=${TICKFLOW_TICKER_SUBJECT:-tickflow.market.ticker}
+      - TICKFLOW_OPPORTUNITY_SUBJECT=${TICKFLOW_OPPORTUNITY_SUBJECT:-tickflow.scanner.opportunities}
+      - RUST_LOG=${RUST_LOG:-info}
+    depends_on:
+      - nats
+      - ingestion
+    restart: unless-stopped
+
+  # ─── Execution Engine (Python) ────────────────────────────
+  execution:
+    build:
+      context: ../services/execution
+      dockerfile: Dockerfile
+    environment:
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - TICKFLOW_OPPORTUNITY_SUBJECT=${TICKFLOW_OPPORTUNITY_SUBJECT:-tickflow.scanner.opportunities}
+      - TICKFLOW_TRADE_RESULT_SUBJECT=${TICKFLOW_TRADE_RESULT_SUBJECT:-tickflow.execution.results}
+      - HUMMINGBOT_URL=${HUMMINGBOT_URL:-http://hummingbot:15888}
+      - HUMMINGBOT_ORDER_ENDPOINT=${HUMMINGBOT_ORDER_ENDPOINT:-/clob/orders}
+      - HUMMINGBOT_AUTH_TOKEN=${HUMMINGBOT_AUTH_TOKEN:-}
+      - HUMMINGBOT_DEFAULT_CHAIN=${HUMMINGBOT_DEFAULT_CHAIN:-}
+      - HUMMINGBOT_DEFAULT_NETWORK=${HUMMINGBOT_DEFAULT_NETWORK:-}
+      - HUMMINGBOT_ORDER_TYPE=${HUMMINGBOT_ORDER_TYPE:-LIMIT}
+      - HUMMINGBOT_TIMEOUT_SECONDS=${HUMMINGBOT_TIMEOUT_SECONDS:-10}
+      - HUMMINGBOT_CONNECTOR_MAP=${HUMMINGBOT_CONNECTOR_MAP:-}
+      - EXECUTION_MAX_BTC_QUANTITY=${EXECUTION_MAX_BTC_QUANTITY:-0.01}
+    depends_on:
+      - nats
+      - hummingbot
+    restart: unless-stopped
+
+  # ─── Hummingbot ───────────────────────────────────────────
+  hummingbot:
+    image: hummingbot/hummingbot:latest
+    stdin_open: true
+    tty: true
+    ports:
+      - "${HUMMINGBOT_PORT:-15888}:15888"
+    volumes:
+      - ./hummingbot_data/conf:/home/hummingbot/conf
+      - ./hummingbot_data/logs:/home/hummingbot/logs
+      - ./hummingbot_data/data:/home/hummingbot/data
+      - ./hummingbot_data/scripts:/home/hummingbot/scripts
+    environment:
+      - CONFIG_PASSWORD=${CONFIG_PASSWORD:-tickflow}
+    command:
+      - /bin/bash
+      - -lc
+      - >
+        mkdir -p /home/hummingbot/conf/connectors /home/hummingbot/logs /home/hummingbot/data /home/hummingbot/scripts &&
+        conda activate hummingbot &&
+        if [ ! -f /home/hummingbot/conf/.password_verification ]; then
+          python -c "import os; from hummingbot.client.config.config_crypt import ETHKeyFileSecretManger, store_password_verification; store_password_verification(ETHKeyFileSecretManger(os.environ['CONFIG_PASSWORD']))";
+        fi &&
+        ./bin/hummingbot_quickstart.py 2>&1 | tee -a ./logs/hummingbot.log
+    restart: unless-stopped
+
+  # ─── Frontend (Next.js) ───────────────────────────────────
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    ports:
+      - "${FRONTEND_PORT:-3001}:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8080}
+    depends_on:
+      - gateway
+    restart: unless-stopped
+
+  # ─── NATS (Message Queue) ─────────────────────────────────
+  nats:
+    image: nats:latest
+    ports:
+      - "${NATS_PORT:-4222}:4222"   # Client
+      - "${NATS_MONITOR_PORT:-8222}:8222"   # Monitoring
+    command: ["--config", "/etc/nats/nats.conf"]
+    volumes:
+      - ./config/nats.conf:/etc/nats/nats.conf
+    restart: unless-stopped
+
+  # ─── MongoDB (Persistence / Monitoring) ──────────────────
+  mongodb:
+    image: mongo:7
+    ports:
+      - "${MONGODB_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:

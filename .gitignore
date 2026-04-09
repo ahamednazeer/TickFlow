@@ -70,6 +70,10 @@ web_modules/
 .env.*
 !.env.example
 
+# service-local env examples
+!.env.example
+!**/.env.example
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
@@ -81,6 +85,30 @@ out
 # Nuxt.js build / generate output
 .nuxt
 dist
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Rust
+target/
+
+# Go
+bin/
+cover.out
+
+# Local service binaries
+services/gateway/tickflow-gateway
+services/ingestion/tickflow-ingestion
+
+# Docker / runtime data
+hummingbot_data/
+mongodb_data/
+redis_data/
 
 # Gatsby files
 .cache/

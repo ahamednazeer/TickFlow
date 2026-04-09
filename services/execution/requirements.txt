@@ -1,0 +1,3 @@
+# TickFlow Execution Engine Dependencies
+nats-py==2.9.0
+aiohttp==3.9.1
